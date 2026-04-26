@@ -63,15 +63,10 @@ void write_log(const char *district, const char *role, const char *user, const c
         return;
     }
 
-    // Build the log entry
-    char timebuf[64];
     time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", t);
-
     char entry[512];
-    snprintf(entry, sizeof(entry), "[%s] role=%s user=%s action=%s\n",
-             timebuf, role, user, action);
+    snprintf(entry, sizeof(entry), "%ld\t%s\t%s\t%s\n",
+             (long)now, user, role, action);
 
     write(fd, entry, strlen(entry));
     close(fd);
@@ -107,7 +102,7 @@ void check_symlink(const char *district) {
     }
 
     if (S_ISLNK(lst.st_mode)) {
-        // Now check if the target actually exists
+        // Check if the target actually exists
         struct stat st;
         if (stat(link_name, &st) < 0) {
             printf("Warning: symlink '%s' is dangling (target does not exist)\n", link_name);
@@ -121,23 +116,23 @@ void init_district(const char *district) {
     umask(0);  // Ensure we can set permissions exactly
     char path[256];
 
-    // Create district directory with 750
+    //district directory with 750
     mkdir(district, 0750);
     chmod(district, 0750);
 
-    // Create reports.dat with 664
+    //reports.dat with 664
     snprintf(path, sizeof(path), "%s/reports.dat", district);
     int fd = open(path, O_WRONLY | O_CREAT, 0664);
     if (fd >= 0) close(fd);
     chmod(path, 0664);
 
-    // Create district.cfg with 640
+    //district.cfg with 640
     snprintf(path, sizeof(path), "%s/district.cfg", district);
     fd = open(path, O_WRONLY | O_CREAT, 0640);
     if (fd >= 0) close(fd);
     chmod(path, 0640);
 
-    // Create logged_district with 644
+    //logged_district with 644
     snprintf(path, sizeof(path), "%s/logged_district", district);
     fd = open(path, O_WRONLY | O_CREAT, 0644);
     if (fd >= 0) close(fd);
@@ -150,27 +145,44 @@ void add_report(const char *district, const char *user, const char *role) {
     char path[256];
     snprintf(path, sizeof(path), "%s/reports.dat", district);
 
-    // Only initialise if directory doesn't exist yet
     struct stat st;
     if (stat(district, &st) != 0) {
         init_district(district);
     }
 
-    // Find the first available ID
+    // For the input
+    double latitude, longitude;
+    char category[MAX_CATEGORY];
+    int severity;
+    char description[MAX_DESC];
+
+    printf("X: ");
+    scanf("%lf", &latitude);
+    printf("Y: ");
+    scanf("%lf", &longitude);
+    printf("Category (road/lighting/flooding/other): ");
+    scanf("%s", category);
+    printf("Severity level (1/2/3): ");
+    scanf("%d", &severity);
+    printf("Description: ");
+    getchar();  // consume newline left by scanf
+    fgets(description, MAX_DESC, stdin);
+    // Remove trailing newline from fgets
+    description[strcspn(description, "\n")] = '\0';
+
+    // Find next available ID
     int next_id = 1;
     int fd_read = open(path, O_RDONLY);
     if (fd_read >= 0) {
         Report temp;
-        int ids[10000] = {0};  // track which IDs exist
+        int ids[10000] = {0};
         while (read(fd_read, &temp, sizeof(Report)) == sizeof(Report)) {
             ids[temp.id] = 1;
         }
         close(fd_read);
-        // Find first gap
         while (ids[next_id] == 1) next_id++;
     }
 
-    // Open for writing
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0664);
     if (fd < 0) {
         perror("open reports.dat");
@@ -181,12 +193,12 @@ void add_report(const char *district, const char *user, const char *role) {
     memset(&r, 0, sizeof(Report));
     r.id        = next_id;
     strncpy(r.inspector, user, MAX_NAME - 1);
-    r.severity  = 1;
+    r.severity  = severity;
     r.timestamp = time(NULL);
-    strncpy(r.category, "road", MAX_CATEGORY - 1);
-    strncpy(r.description, "Test report", MAX_DESC - 1);
-    r.latitude  = 0.0;
-    r.longitude = 0.0;
+    strncpy(r.category, category, MAX_CATEGORY - 1);
+    strncpy(r.description, description, MAX_DESC - 1);
+    r.latitude  = latitude;
+    r.longitude = longitude;
 
     write(fd, &r, sizeof(Report));
     close(fd);
@@ -221,7 +233,6 @@ void list_reports(const char *district, const char *role, const char *user) {
         return;
     }
 
-    // Read all records into an array
     Report reports[10000];
     int count = 0;
     while (read(fd, &reports[count], sizeof(Report)) == sizeof(Report)) {
@@ -229,7 +240,7 @@ void list_reports(const char *district, const char *role, const char *user) {
     }
     close(fd);
 
-    // Sort by ID (bubble sort)
+    // Bubble sort to sort the IDS :)
     for (int i = 0; i < count - 1; i++) {
         for (int j = 0; j < count - i - 1; j++) {
             if (reports[j].id > reports[j+1].id) {
@@ -240,7 +251,6 @@ void list_reports(const char *district, const char *role, const char *user) {
         }
     }
 
-    // Print
     printf("%-5s %-20s %-12s %-10s %s\n", "ID", "Inspector", "Category", "Severity", "Timestamp");
     printf("\n");
 
@@ -403,13 +413,11 @@ int parse_condition(const char *input, char *field, char *op, char *value) {
         return 0;
     }
     
-    // Find the first colon
     const char *first_colon = strchr(input, ':');
     if (first_colon == NULL) {
         return 0;
     }
     
-    // Find the second colon
     const char *second_colon = strchr(first_colon + 1, ':');
     if (second_colon == NULL) {
         return 0;
@@ -419,11 +427,9 @@ int parse_condition(const char *input, char *field, char *op, char *value) {
     size_t field_len = first_colon - input;
     size_t op_len = second_colon - (first_colon + 1);
     
-    // Copy field
     strncpy(field, input, field_len);
     field[field_len] = '\0';
     
-    // Copy operator
     strncpy(op, first_colon + 1, op_len);
     op[op_len] = '\0';
     
@@ -441,7 +447,7 @@ static int compare_strings(const char *actual, const char *expected, const char 
     } else if (strcmp(op, "!=") == 0) {
         return cmp != 0;
     }
-    // String comparisons don't make sense for <, <=, >, >=
+    
     return 0;
 }
 
@@ -484,29 +490,24 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
         return 0;
     }
     
-    // Check severity field (integer)
     if (strcmp(field, "severity") == 0) {
         int int_value = atoi(value);
         return compare_ints(r->severity, int_value, op);
     }
     
-    // Check category field (string)
     else if (strcmp(field, "category") == 0) {
         return compare_strings(r->category, value, op);
     }
     
-    // Check inspector field (string)
     else if (strcmp(field, "inspector") == 0) {
         return compare_strings(r->inspector, value, op);
     }
     
-    // Check timestamp field (time_t)
     else if (strcmp(field, "timestamp") == 0) {
         time_t time_value = (time_t)atol(value);
         return compare_time(r->timestamp, time_value, op);
     }
     
-    // Unsupported field
     return 0;
 }
 
@@ -520,7 +521,6 @@ void filter_reports(const char *district, const char *role, const char *user, in
         return;
     }
 
-    // Read matching records into array
     Report results[10000];
     int count = 0;
 
@@ -545,7 +545,7 @@ void filter_reports(const char *district, const char *role, const char *user, in
 
     close(fd);
 
-    // Sort by ID (bubble sort)
+    // Bubble sort for IDS :)
     for (int i = 0; i < count - 1; i++) {
         for (int j = 0; j < count - i - 1; j++) {
             if (results[j].id > results[j+1].id) {
@@ -556,7 +556,6 @@ void filter_reports(const char *district, const char *role, const char *user, in
         }
     }
 
-    // Print sorted results
     for (int i = 0; i < count; i++) {
         char timebuf[64];
         struct tm *t = localtime(&results[i].timestamp);
