@@ -24,12 +24,6 @@ typedef struct {
     char    description[MAX_DESC];
 } Report;
 
-/* --------------------------------------------------------------------------
- * parse_int
- * Converts a string to an integer using strtol, which unlike atoi detects
- * invalid input (letters, overflow, empty string). Returns 1 on success and
- * stores the result in *out. Returns 0 and prints an error on failure.
- * -------------------------------------------------------------------------- */
 static int parse_int(const char *str, int *out, const char *arg_name) {
     char *endptr;
     errno = 0;
@@ -42,24 +36,11 @@ static int parse_int(const char *str, int *out, const char *arg_name) {
     return 1;
 }
 
-/* --------------------------------------------------------------------------
- * district_exists
- * Returns 1 if the district directory exists, 0 otherwise.
- * Used to give a clear error message when operating on a non-existent
- * district instead of a cryptic open() failure deeper in the call chain.
- * -------------------------------------------------------------------------- */
 static int district_exists(const char *district) {
     struct stat st;
     return (stat(district, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
-/* --------------------------------------------------------------------------
- * mode_to_string
- * Converts the permission bits of a mode_t into a 9-character string like
- * "rw-rw-r--". The caller must supply a buffer of at least 10 bytes.
- * Each bit is tested individually against the POSIX macros so the mapping
- * is explicit and easy to verify.
- * -------------------------------------------------------------------------- */
 void mode_to_string(mode_t mode, char *str) {
     str[0] = (mode & S_IRUSR) ? 'r' : '-';
     str[1] = (mode & S_IWUSR) ? 'w' : '-';
@@ -73,21 +54,6 @@ void mode_to_string(mode_t mode, char *str) {
     str[9] = '\0';
 }
 
-/* --------------------------------------------------------------------------
- * check_permission
- * Checks whether a given role has a required access bit on a file.
- *
- * The spec maps roles to Unix identities:
- *   manager  -> owner  (use S_IRUSR / S_IWUSR / S_IXUSR bits)
- *   inspector -> group  (use S_IRGRP / S_IWGRP / S_IXGRP bits)
- *
- * The caller passes the GROUP bit that represents the intended permission
- * (e.g. S_IWGRP for "write access"). For managers the function shifts that
- * to the equivalent OWNER bit before checking, so the same call works for
- * both roles without the caller needing to know which bit set to use.
- *
- * Returns 1 if the role has the permission, 0 otherwise.
- * -------------------------------------------------------------------------- */
 int check_permission(const char *path, const char *role, mode_t required_group_bit) {
     struct stat st;
     if (stat(path, &st) < 0) {
@@ -96,32 +62,16 @@ int check_permission(const char *path, const char *role, mode_t required_group_b
     }
 
     if (strcmp(role, "manager") == 0) {
-        /*
-         * Managers are owners. Map the group bit to its owner equivalent:
-         *   S_IRGRP (0040) -> S_IRUSR (0400)
-         *   S_IWGRP (0020) -> S_IWUSR (0200)
-         *   S_IXGRP (0010) -> S_IXUSR (0100)
-         * The group bits sit 3 positions to the right of the owner bits,
-         * so shifting left by 3 does the conversion.
-         */
         mode_t owner_bit = required_group_bit << 3;
         return (st.st_mode & owner_bit) ? 1 : 0;
 
     } else if (strcmp(role, "inspector") == 0) {
-        /* Inspectors are group members — check group bits directly. */
         return (st.st_mode & required_group_bit) ? 1 : 0;
     }
 
     return 0;
 }
 
-/* --------------------------------------------------------------------------
- * write_log
- * Appends a tab-separated audit entry to logged_district.
- * O_APPEND makes each write atomic at the kernel level, which is important
- * if multiple processes ever write to the same log simultaneously.
- * Errors are reported to stderr so the caller always knows if logging failed.
- * -------------------------------------------------------------------------- */
 void write_log(const char *district, const char *role, const char *user, const char *action) {
     char path[256];
     snprintf(path, sizeof(path), "%s/logged_district", district);
@@ -144,12 +94,6 @@ void write_log(const char *district, const char *role, const char *user, const c
     close(fd);
 }
 
-/* --------------------------------------------------------------------------
- * create_symlink
- * Creates a convenience symlink named active_reports-<district> in the
- * current working directory, pointing to <district>/reports.dat.
- * Any pre-existing symlink with the same name is removed first via unlink().
- * -------------------------------------------------------------------------- */
 void create_symlink(const char *district) {
     char link_name[256];
     char target[256];
@@ -157,7 +101,7 @@ void create_symlink(const char *district) {
     snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
     snprintf(target,    sizeof(target),    "%s/reports.dat",    district);
 
-    unlink(link_name);  /* remove old symlink if it exists; ignore errors */
+    unlink(link_name);
 
     if (symlink(target, link_name) < 0) {
         fprintf(stderr, "symlink '%s': %s\n", link_name, strerror(errno));
@@ -167,12 +111,6 @@ void create_symlink(const char *district) {
     printf("Symlink '%s' -> '%s' created\n", link_name, target);
 }
 
-/* --------------------------------------------------------------------------
- * check_symlink
- * Uses lstat() on the symlink itself (not its target) to confirm it exists
- * and is indeed a symlink. Then uses stat() to follow the link and check
- * whether the target file still exists. Reports dangling links as a warning.
- * -------------------------------------------------------------------------- */
 void check_symlink(const char *district) {
     char link_name[256];
     snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
@@ -193,18 +131,6 @@ void check_symlink(const char *district) {
     }
 }
 
-/* --------------------------------------------------------------------------
- * init_district
- * Creates the directory structure and files for a new district.
- * umask(0) is called so that the chmod() calls below set permissions exactly
- * as specified — without it, the process umask would silently remove bits.
- *
- * Permission layout (from spec):
- *   district directory  750  rwxr-x---
- *   reports.dat         664  rw-rw-r--
- *   district.cfg        640  rw-r-----
- *   logged_district     644  rw-r--r--
- * -------------------------------------------------------------------------- */
 void init_district(const char *district) {
     umask(0);
     char path[256];
@@ -230,34 +156,13 @@ void init_district(const char *district) {
     create_symlink(district);
 }
 
-/* --------------------------------------------------------------------------
- * compare_reports_by_id  (qsort comparator)
- * Used by both list_reports and filter_reports to sort results by ID.
- * Replaces the two copies of bubble sort that existed before.
- * qsort is O(n log n); bubble sort was O(n^2).
- * -------------------------------------------------------------------------- */
 static int compare_reports_by_id(const void *a, const void *b) {
     const Report *ra = (const Report *)a;
     const Report *rb = (const Report *)b;
     return ra->id - rb->id;
 }
 
-/* --------------------------------------------------------------------------
- * add_report
- * Reads a new report from stdin, assigns the next available ID, and appends
- * the fixed-size Record struct to reports.dat.
- *
- * Both roles may add reports (spec: "Both roles may add reports").
- * check_permission verifies S_IWGRP (group write) on reports.dat before
- * writing — managers pass because their owner-write bit (S_IWUSR) is set,
- * inspectors pass because the group-write bit (S_IWGRP) is set (664).
- *
- * ID assignment: reads all existing IDs into a boolean array and finds the
- * first gap. This correctly handles IDs left by deleted reports.
- * The ids array is heap-allocated to avoid a large stack frame.
- * -------------------------------------------------------------------------- */
 void add_report(const char *district, const char *user, const char *role) {
-    /* Create district structure if it does not exist yet */
     struct stat dst;
     if (stat(district, &dst) != 0) {
         init_district(district);
@@ -266,14 +171,12 @@ void add_report(const char *district, const char *user, const char *role) {
     char path[256];
     snprintf(path, sizeof(path), "%s/reports.dat", district);
 
-    /* Permission check: both roles need write access to reports.dat */
     if (!check_permission(path, role, S_IWGRP)) {
         fprintf(stderr, "Error: role '%s' does not have write permission on %s\n", role, path);
         write_log(district, role, user, "add_report_denied");
         return;
     }
 
-    /* Read report fields from stdin */
     double latitude, longitude;
     char   category[MAX_CATEGORY];
     int    severity;
@@ -292,7 +195,6 @@ void add_report(const char *district, const char *user, const char *role) {
     }
 
     printf("Category (road/lighting/flooding/other): ");
-    /* Width limit = MAX_CATEGORY - 1 = 31, prevents buffer overflow */
     if (scanf("%31s", category) != 1) {
         fprintf(stderr, "Error: invalid category\n");
         return;
@@ -305,22 +207,16 @@ void add_report(const char *district, const char *user, const char *role) {
     }
 
     printf("Description: ");
-    getchar();  /* consume the newline left in the buffer by the last scanf */
+    getchar();
     if (fgets(description, MAX_DESC, stdin) == NULL) {
         fprintf(stderr, "Error: could not read description\n");
         return;
     }
-    description[strcspn(description, "\n")] = '\0';  /* strip trailing newline */
+    description[strcspn(description, "\n")] = '\0';
 
-    /* Find next available ID by scanning existing records */
     int next_id = 1;
     int fd_read = open(path, O_RDONLY);
     if (fd_read >= 0) {
-        /*
-         * Use a heap-allocated boolean array instead of a stack array.
-         * 10000 ints on the stack = 40 KB; on the heap it is fine.
-         * The +1 makes id=10000 safe to index without going out of bounds.
-         */
         int *ids = calloc(MAX_REPORTS + 1, sizeof(int));
         if (!ids) {
             fprintf(stderr, "Error: out of memory\n");
@@ -366,17 +262,6 @@ void add_report(const char *district, const char *user, const char *role) {
     write_log(district, role, user, "add_report");
 }
 
-/* --------------------------------------------------------------------------
- * list_reports
- * Prints metadata for reports.dat (permissions, size, last-modified) and
- * then a sorted table of all reports in the district.
- *
- * Reports are loaded into a heap-allocated array (not a stack array) to
- * avoid a multi-megabyte stack frame. They are sorted by ID with qsort.
- *
- * Permission check: both roles need read access (S_IRGRP covers group read,
- * which is set on 664 for inspectors; managers have owner read).
- * -------------------------------------------------------------------------- */
 void list_reports(const char *district, const char *role, const char *user) {
     if (!district_exists(district)) {
         fprintf(stderr, "Error: district '%s' does not exist\n", district);
@@ -387,14 +272,12 @@ void list_reports(const char *district, const char *role, const char *user) {
     char path[256];
     snprintf(path, sizeof(path), "%s/reports.dat", district);
 
-    /* Permission check: read access required */
     if (!check_permission(path, role, S_IRGRP)) {
         fprintf(stderr, "Error: role '%s' does not have read permission on %s\n", role, path);
         write_log(district, role, user, "list_reports_denied");
         return;
     }
 
-    /* Print file metadata as required by spec */
     struct stat st;
     if (stat(path, &st) == 0) {
         char perms[10];
@@ -414,7 +297,6 @@ void list_reports(const char *district, const char *role, const char *user) {
         return;
     }
 
-    /* Heap-allocate the report array */
     Report *reports = malloc(MAX_REPORTS * sizeof(Report));
     if (!reports) {
         fprintf(stderr, "Error: out of memory\n");
@@ -455,11 +337,6 @@ void list_reports(const char *district, const char *role, const char *user) {
     write_log(district, role, user, "list_reports");
 }
 
-/* --------------------------------------------------------------------------
- * view_report
- * Scans reports.dat linearly for a matching ID and prints full details.
- * Available to both roles; permission check requires group read (S_IRGRP).
- * -------------------------------------------------------------------------- */
 void view_report(const char *district, int report_id, const char *role, const char *user) {
     if (!district_exists(district)) {
         fprintf(stderr, "Error: district '%s' does not exist\n", district);
@@ -511,13 +388,6 @@ void view_report(const char *district, int report_id, const char *role, const ch
     write_log(district, role, user, "view_report");
 }
 
-/* --------------------------------------------------------------------------
- * remove_report
- * Removes a single report by shifting all subsequent records one slot
- * backward using lseek(), then truncating the file with ftruncate().
- * Manager role only — verified both by role string and by checking that the
- * owner-write bit (mapped from S_IWGRP via check_permission) is set.
- * -------------------------------------------------------------------------- */
 void remove_report(const char *district, int report_id, const char *role, const char *user) {
     if (!district_exists(district)) {
         fprintf(stderr, "Error: district '%s' does not exist\n", district);
@@ -526,14 +396,12 @@ void remove_report(const char *district, int report_id, const char *role, const 
     char path[256];
     snprintf(path, sizeof(path), "%s/reports.dat", district);
 
-    /* Spec: manager role only - explicit role check */
 if (strcmp(role, "manager") != 0) {
     printf("Error: only managers can remove reports\n");
     write_log(district, role, user, "remove_report_denied");
     return;
 }
 
-/* Additional verification: manager must have write permission */
 if (!check_permission(path, role, S_IWGRP)) {
     printf("Error: manager lacks write permission on %s\n", path);
     write_log(district, role, user, "remove_report_denied");
@@ -553,17 +421,12 @@ if (!check_permission(path, role, S_IWGRP)) {
         return;
     }
 
-    /*
-     * Warn if the file size is not a clean multiple of sizeof(Report).
-     * This could indicate a partial write or corruption.
-     */
     if (st.st_size % sizeof(Report) != 0) {
         fprintf(stderr, "Warning: '%s' size is not a multiple of record size — possible corruption\n", path);
     }
 
     int total = (int)(st.st_size / sizeof(Report));
 
-    /* Find the record to delete */
     int found_pos = -1;
     Report r;
     for (int i = 0; i < total; i++) {
@@ -586,7 +449,6 @@ if (!check_permission(path, role, S_IWGRP)) {
         return;
     }
 
-    /* Shift every record after found_pos one slot earlier */
     for (int i = found_pos + 1; i < total; i++) {
         lseek(fd, (off_t)(i * sizeof(Report)), SEEK_SET);
         if (read(fd, &r, sizeof(Report)) != (ssize_t)sizeof(Report)) {
@@ -602,7 +464,6 @@ if (!check_permission(path, role, S_IWGRP)) {
         }
     }
 
-    /* Shrink the file by one record */
     if (ftruncate(fd, (off_t)((total - 1) * sizeof(Report))) < 0) {
         fprintf(stderr, "Error: ftruncate failed: %s\n", strerror(errno));
         close(fd);
@@ -614,13 +475,6 @@ if (!check_permission(path, role, S_IWGRP)) {
     write_log(district, role, user, "remove_report");
 }
 
-/* --------------------------------------------------------------------------
- * update_threshold
- * Writes a threshold=<value> line to district.cfg.
- * Manager role only. Uses fstat() on the already-open descriptor instead of
- * a separate stat() call, eliminating the TOCTOU race window that existed
- * when stat() and open() were two separate operations.
- * -------------------------------------------------------------------------- */
 void update_threshold(const char *district, int value, const char *role, const char *user) {
     if (!district_exists(district)) {
         fprintf(stderr, "Error: district '%s' does not exist\n", district);
@@ -629,18 +483,12 @@ void update_threshold(const char *district, int value, const char *role, const c
     char path[256];
     snprintf(path, sizeof(path), "%s/district.cfg", district);
 
-    /* Spec: manager role only */
     if (!check_permission(path, role, S_IWGRP)) {
         printf("Error: only managers can update threshold\n");
         write_log(district, role, user, "update_threshold_denied");
         return;
     }
 
-    /*
-     * Open first, THEN check permissions via fstat() on the open descriptor.
-     * This closes the TOCTOU race: between stat() and open() in the original
-     * code, another process could change permissions in that window.
-     */
     int fd = open(path, O_WRONLY | O_TRUNC, 0640);
     if (fd < 0) {
         fprintf(stderr, "open '%s': %s\n", path, strerror(errno));
@@ -667,12 +515,6 @@ void update_threshold(const char *district, int value, const char *role, const c
     write_log(district, role, user, "update_threshold");
 }
 
-/* --------------------------------------------------------------------------
- * parse_condition  (AI-assisted, reviewed and corrected by student)
- * Splits a "field:operator:value" string into its three parts.
- * Returns 1 on success, 0 if the string does not contain two colons.
- * The value destination is limited to 63 characters to prevent overflow.
- * -------------------------------------------------------------------------- */
 int parse_condition(const char *input, char *field, char *op, char *value) {
     if (input == NULL || field == NULL || op == NULL || value == NULL) {
         return 0;
@@ -687,7 +529,6 @@ int parse_condition(const char *input, char *field, char *op, char *value) {
     size_t field_len = first_colon - input;
     size_t op_len    = second_colon - (first_colon + 1);
 
-    /* Reject oversized field or operator before copying to fixed buffers */
     if (field_len == 0 || field_len >= 64) return 0;
     if (op_len    == 0 || op_len    >= 8)  return 0;
 
@@ -696,7 +537,6 @@ int parse_condition(const char *input, char *field, char *op, char *value) {
     strncpy(field, input,            field_len);  field[field_len] = '\0';
     strncpy(op,    first_colon + 1,  op_len);     op[op_len]       = '\0';
 
-    /* Bounded copy for value - properly zero out the buffer first */
     memset(value, 0, 64);
     strncpy(value, second_colon + 1, 63);
     value[63] = '\0';
@@ -731,19 +571,13 @@ static int compare_time(time_t actual, time_t expected, const char *op) {
     return 0;
 }
 
-/* --------------------------------------------------------------------------
- * match_condition  (AI-assisted, reviewed and corrected by student)
- * Returns 1 if Report *r satisfies field:op:value, 0 otherwise.
- * The value string is converted to the correct C type (int, time_t, or
- * char*) based on the field name before comparison.
- * -------------------------------------------------------------------------- */
 int match_condition(Report *r, const char *field, const char *op, const char *value) {
     if (r == NULL || field == NULL || op == NULL || value == NULL) return 0;
 
     if (strcmp(field, "severity") == 0) {
         char *endptr;
         int int_value = (int)strtol(value, &endptr, 10);
-        if (*endptr != '\0') return 0;  /* value is not a valid integer */
+        if (*endptr != '\0') return 0;
         return compare_ints(r->severity, int_value, op);
     }
 
@@ -756,19 +590,13 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
     if (strcmp(field, "timestamp") == 0) {
         char *endptr;
         time_t time_value = (time_t)strtol(value, &endptr, 10);
-        if (*endptr != '\0') return 0;  /* value is not a valid integer */
+        if (*endptr != '\0') return 0;
         return compare_time(r->timestamp, time_value, op);
     }
 
     return 0;
 }
 
-/* --------------------------------------------------------------------------
- * filter_reports
- * Reads every record from reports.dat and applies all conditions (AND logic).
- * Results are collected into a heap-allocated array, sorted by ID, and
- * printed. The permission check requires group read (S_IRGRP).
- * -------------------------------------------------------------------------- */
 void filter_reports(const char *district, const char *role, const char *user,
                     int argc, char *argv[], int condition_start) {
     if (!district_exists(district)) {
@@ -790,7 +618,6 @@ void filter_reports(const char *district, const char *role, const char *user,
         return;
     }
 
-    /* Heap-allocate results array */
     Report *results = malloc(MAX_REPORTS * sizeof(Report));
     if (!results) {
         fprintf(stderr, "Error: out of memory\n");
@@ -838,15 +665,6 @@ void filter_reports(const char *district, const char *role, const char *user,
     write_log(district, role, user, "filter");
 }
 
-/* --------------------------------------------------------------------------
- * main
- * Parses command-line arguments and dispatches to the correct function.
- * Every argv[++i] access is guarded with a bounds check so that missing
- * arguments produce a clear error instead of a crash or undefined behaviour.
- * Numeric arguments use parse_int() (strtol-based) instead of atoi() so
- * invalid input like "abc" is caught and reported.
- * threshold_value is a separate variable from report_id for clarity.
- * -------------------------------------------------------------------------- */
 int main(int argc, char *argv[]) {
     char *role            = NULL;
     char *user            = NULL;
@@ -927,7 +745,7 @@ int main(int argc, char *argv[]) {
         int condition_start = 0;
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--filter") == 0) {
-                condition_start = i + 2;  /* skip --filter and district name */
+                condition_start = i + 2;
                 break;
             }
         }
