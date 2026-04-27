@@ -1,3 +1,4 @@
-1777233181	alice	manager	add_report
-1777233227	bob	inspector	add_report
-1777233289	charlie	inspector	add_report
+1777278275	alice	manager	add_report
+1777278296	bob	inspector	add_report
+1777278346	charlie	inspector	add_report
+1777278418	alice	manager	list_reports
