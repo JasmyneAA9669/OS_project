@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
 
@@ -665,6 +666,54 @@ void filter_reports(const char *district, const char *role, const char *user,
     write_log(district, role, user, "filter");
 }
 
+void remove_district(const char *district, const char *role, const char *user) {
+    // Manager only
+    if (strcmp(role, "manager") != 0) {
+        printf("Error: only managers can remove districts\n");
+        return;
+    }
+
+    // Safety check
+    if (strlen(district) == 0 || strcmp(district, "/") == 0 || strcmp(district, ".") == 0) {
+        printf("Error: invalid district name\n");
+        return;
+    }
+
+    if (!district_exists(district)) {
+        fprintf(stderr, "Error: district '%s' does not exist\n", district);
+        return;
+    }
+
+    // Remove the symlink first
+    char link_name[256];
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
+    unlink(link_name);
+    printf("Symlink '%s' removed\n", link_name);
+
+    // Fork a child process to run rm -rf
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("fork");
+        return;
+    } else if (pid == 0) {
+        // Child process - replace with rm -rf
+        execlp("rm", "rm", "-rf", district, NULL);
+        perror("execlp");
+        exit(1);
+    } else {
+        // Parent process - wait for child to finish
+        int status;
+        wait(&status);
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            printf("District '%s' removed successfully\n", district);
+        } else {
+            printf("Error: failed to remove district '%s'\n", district);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     char *role            = NULL;
     char *user            = NULL;
@@ -718,39 +767,45 @@ int main(int argc, char *argv[]) {
             if (++i >= argc) { fprintf(stderr, "Error: --filter requires a district\n"); return 1; }
             command  = "filter";
             district = argv[i];
+        } else if (strcmp(argv[i], "--remove_district") == 0) {
+            if (++i >= argc) { fprintf(stderr, "Error: --remove_district requires a district\n"); return 1; }
+            command  = "remove_district";
+            district = argv[i];
         }
     }
 
-    if (!role || !user || !command || !district) {
-        printf("Usage: city_manager --role <role> --user <user> --<command> <district> [args]\n");
-        return 1;
-    }
+        if (!role || !user || !command || !district) {
+            printf("Usage: city_manager --role <role> --user <user> --<command> <district> [args]\n");
+            return 1;
+        }
 
-    if (strcmp(command, "add") == 0) {
-        add_report(district, user, role);
+        if (strcmp(command, "add") == 0) {
+            add_report(district, user, role);
 
-    } else if (strcmp(command, "list") == 0) {
-        list_reports(district, role, user);
+        } else if (strcmp(command, "list") == 0) {
+            list_reports(district, role, user);
 
-    } else if (strcmp(command, "view") == 0) {
-        view_report(district, report_id, role, user);
+        } else if (strcmp(command, "view") == 0) {
+            view_report(district, report_id, role, user);
 
-    } else if (strcmp(command, "remove_report") == 0) {
-        remove_report(district, report_id, role, user);
+        } else if (strcmp(command, "remove_report") == 0) {
+            remove_report(district, report_id, role, user);
 
-    } else if (strcmp(command, "update_threshold") == 0) {
-        update_threshold(district, threshold_value, role, user);
+        } else if (strcmp(command, "update_threshold") == 0) {
+            update_threshold(district, threshold_value, role, user);
 
-    } else if (strcmp(command, "filter") == 0) {
-        int condition_start = 0;
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--filter") == 0) {
-                condition_start = i + 2;
-                break;
+        } else if (strcmp(command, "filter") == 0) {
+            int condition_start = 0;
+            for (int i = 1; i < argc; i++) {
+                if (strcmp(argv[i], "--filter") == 0) {
+                    condition_start = i + 2;
+                    break;
+                }
             }
+            filter_reports(district, role, user, argc, argv, condition_start);
+        } else if (strcmp(command, "remove_district") == 0) {
+            remove_district(district, role, user);
         }
-        filter_reports(district, role, user, argc, argv, condition_start);
-    }
 
     return 0;
 }
