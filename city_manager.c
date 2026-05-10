@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
 
 #define MAX_NAME     64
 #define MAX_CATEGORY 32
@@ -163,6 +164,46 @@ static int compare_reports_by_id(const void *a, const void *b) {
     return ra->id - rb->id;
 }
 
+void notify_monitor(const char *district, const char *role, const char *user) {
+    int fd = open(".monitor_pid", O_RDONLY);
+    if (fd < 0) {
+        char action[128];
+        snprintf(action, sizeof(action), "add_report (monitor not notified: %s)", strerror(errno));
+        write_log(district, role, user, action);
+        return;
+    }
+
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+
+    if (n <= 0) {
+        char action[128];
+        snprintf(action, sizeof(action), "add_report (monitor not notified: failed to read PID)");
+        write_log(district, role, user, action);
+        return;
+    }
+
+    buf[n] = '\0';
+    pid_t monitor_pid = (pid_t)strtol(buf, NULL, 10);
+
+    if (monitor_pid <= 0) {
+        char action[128];
+        snprintf(action, sizeof(action), "add_report (monitor not notified: invalid PID)");
+        write_log(district, role, user, action);
+        return;
+    }
+
+    if (kill(monitor_pid, SIGUSR1) < 0) {
+        char action[128];
+        snprintf(action, sizeof(action), "add_report (monitor not notified: %s)", strerror(errno));
+        write_log(district, role, user, action);
+        return;
+    }
+
+    write_log(district, role, user, "add_report (monitor notified)");
+}
+
 void add_report(const char *district, const char *user, const char *role) {
     struct stat dst;
     if (stat(district, &dst) != 0) {
@@ -260,7 +301,7 @@ void add_report(const char *district, const char *user, const char *role) {
     close(fd);
 
     printf("Report #%d added to district '%s'\n", r.id, district);
-    write_log(district, role, user, "add_report");
+    notify_monitor(district, role, user);
 }
 
 void list_reports(const char *district, const char *role, const char *user) {
@@ -397,17 +438,17 @@ void remove_report(const char *district, int report_id, const char *role, const 
     char path[256];
     snprintf(path, sizeof(path), "%s/reports.dat", district);
 
-if (strcmp(role, "manager") != 0) {
-    printf("Error: only managers can remove reports\n");
-    write_log(district, role, user, "remove_report_denied");
-    return;
-}
+    if (strcmp(role, "manager") != 0) {
+        printf("Error: only managers can remove reports\n");
+        write_log(district, role, user, "remove_report_denied");
+        return;
+    }
 
-if (!check_permission(path, role, S_IWGRP)) {
-    printf("Error: manager lacks write permission on %s\n", path);
-    write_log(district, role, user, "remove_report_denied");
-    return;
-}
+    if (!check_permission(path, role, S_IWGRP)) {
+        printf("Error: manager lacks write permission on %s\n", path);
+        write_log(district, role, user, "remove_report_denied");
+        return;
+    }
 
     int fd = open(path, O_RDWR);
     if (fd < 0) {
