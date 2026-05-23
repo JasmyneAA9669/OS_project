@@ -111,7 +111,6 @@ void write_log(const char *district, const char *role, const char *user, const c
     struct stat st;
     if (stat(path, &st) == 0) {
         if (strcmp(role, "manager") != 0) {
-            fprintf(stderr, "Error: only managers can write to log\n");
             return;
         }
         if (!(st.st_mode & S_IWUSR)) {
